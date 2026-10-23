@@ -1,0 +1,103 @@
+name: Build and Deploy
+
+# Run on every push to main (and allow a manual run from the Actions tab)
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  # ---------------- CI: test, build, push images ----------------
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v4
+
+      - name: Set lowercase image owner
+        run: echo "OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run backend tests
+        working-directory: backend
+        run: |
+          pip install -r requirements-dev.txt
+          pytest -v
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: true
+          tags: |
+            ghcr.io/${{ env.OWNER }}/todo-backend:latest
+            ghcr.io/${{ env.OWNER }}/todo-backend:${{ github.sha }}
+
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: true
+          build-args: |
+            NEXT_PUBLIC_API_URL=http://${{ secrets.SERVER_HOST }}:8000
+          tags: |
+            ghcr.io/${{ env.OWNER }}/todo-frontend:latest
+            ghcr.io/${{ env.OWNER }}/todo-frontend:${{ github.sha }}
+
+  # ---------------- CD: deploy to the EC2 server ----------------
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v4
+
+      - name: Set lowercase image owner
+        run: echo "OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+
+      - name: Copy compose file to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          source: docker-compose.prod.yml
+          target: todo-app
+
+      - name: Pull new images and restart containers
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            set -e
+            cd ~/todo-app
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+            export IMAGE_OWNER="${{ env.OWNER }}"
+            export SERVER_HOST="${{ secrets.SERVER_HOST }}"
+            docker compose -f docker-compose.prod.yml pull
+            docker compose -f docker-compose.prod.yml up -d
+            docker logout ghcr.io
+            docker image prune -f
+            sleep 10
+            curl -fsS http://localhost:8000/api/health && echo " <- backend is healthy"

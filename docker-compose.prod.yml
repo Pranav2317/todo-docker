@@ -1,0 +1,43 @@
+# Production compose file: used on the server by the CI/CD pipeline.
+# Images are DOWNLOADED from GitHub Container Registry, not built here.
+# IMAGE_OWNER and SERVER_HOST are passed in by the pipeline.
+# POSTGRES_PASSWORD comes from the .env file on the server.
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: todo_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: todo_db
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U todo_user -d todo_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  backend:
+    image: ghcr.io/${IMAGE_OWNER}/todo-backend:latest
+    environment:
+      DATABASE_URL: postgresql://todo_user:${POSTGRES_PASSWORD}@db:5432/todo_db
+      FRONTEND_ORIGIN: http://${SERVER_HOST}:3000
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    image: ghcr.io/${IMAGE_OWNER}/todo-frontend:latest
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  db-data:

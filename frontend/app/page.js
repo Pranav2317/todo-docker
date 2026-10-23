@@ -75,7 +75,7 @@ export default function Home() {
   return (
     <main className="page">
       <header className="header">
-        <h1>Dock Tasks</h1>
+        <h1>Pranabh Dock Tasks</h1>
         <p className="sub">
           {todos.length === 0
             ? "Nothing on the list yet."
